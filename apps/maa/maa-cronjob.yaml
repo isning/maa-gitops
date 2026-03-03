@@ -1,0 +1,84 @@
+# 定时调度任务 (CronJob)
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: maa-daily-task
+  namespace: default
+spec:
+  # 每天凌晨 4:00 触发 (注意核对你 K8s 集群的时区，通常默认是 UTC)
+  schedule: "0 4 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: Never
+
+          # --- K8s >= 1.28 原生 Sidecar 容器 ---
+          initContainers:
+          - name: redroid
+            image: redroid/redroid:11.0.0-latest
+            # 关键指令：定义为 Sidecar，随主容器退出而终止
+            restartPolicy: Always
+            securityContext:
+              privileged: true
+            args:
+              - "androidboot.redroid_gpu_mode=host" # 开启 GPU 硬件加速
+              - "androidboot.use_memfd=1"
+            ports:
+              - containerPort: 5555
+            volumeMounts:
+              - name: redroid-userdata
+                mountPath: /data
+              - name: dev-dri
+                mountPath: /dev/dri # Intel/AMD 核显直通路径
+
+          # --- MAA 主容器 (你的每日构建 Nix 镜像) ---
+          containers:
+          - name: maa-cli
+            # 替换为你实际的镜像地址
+            image: your-registry/maa-cli-nix:latest
+            # 关键指令：强制每天拉取最新的构建镜像
+            imagePullPolicy: Always
+            command: ["/bin/sh", "-c"]
+            args:
+              - |
+                echo "等待 Redroid 启动并暴露 ADB 端口..."
+                timeout=120
+                elapsed=0
+                until adb connect 127.0.0.1:5555; do
+                  if [ "$elapsed" -ge "$timeout" ]; then
+                    echo "等待 ADB 超时，退出。"
+                    exit 1
+                  fi
+                  sleep 2
+                  elapsed=$((elapsed + 2))
+                done
+                adb wait-for-device
+                echo "ADB 已连接！等待安卓系统就绪 (30秒)..."
+                sleep 30
+
+                echo "开始执行 MAA 任务..."
+                # 直接运行，核心和资源已打包在镜像内
+                maa run --config /etc/maa/maa-config.json
+
+                echo "任务执行完毕，主容器正常退出。"
+            volumeMounts:
+              - name: maa-config-vol
+                mountPath: /etc/maa/maa-config.json
+                subPath: maa-config.json
+
+          # --- 数据卷声明 ---
+          volumes:
+          - name: redroid-userdata
+            persistentVolumeClaim:
+              claimName: redroid-userdata-pvc
+          - name: maa-config-vol
+            configMap:
+              name: maa-config
+          - name: dev-dri
+            hostPath:
+              path: /dev/dri
+              type: DirectoryOrCreate
