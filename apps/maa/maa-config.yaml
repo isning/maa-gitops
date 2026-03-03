@@ -1,4 +1,4 @@
-# MAA 任务配置文件
+# MAA task configuration
 apiVersion: v1
 kind: ConfigMap
 metadata:

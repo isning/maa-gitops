@@ -1,4 +1,4 @@
-# Redroid 独立持久化存储
+# Redroid persistent storage
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -9,4 +9,4 @@ spec:
     - ReadWriteOnce
   resources:
     requests:
-      storage: 15Gi # 存放明日方舟本体、更新数据及账号状态
+      storage: 15Gi # Stores Arknights game data, updates, and account state
