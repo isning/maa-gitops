@@ -1,0 +1,369 @@
+# ============================================================================
+# Redroid Base Layer Management
+# ============================================================================
+#
+# This file contains all resources for managing the shared /data-base volume
+# (redroid-data-base-pvc):
+#
+#   - RedroidInstance `base`       — baseMode instance (writes directly to base PVC)
+#   - RedroidTask `base-init`      — one-shot first-time initialisation
+#   - RedroidTask `base-update`    — daily scheduled APK/resource update
+#
+# The `base` instance is kept suspended (spec.suspend: true) by default.
+# Both tasks use wakeInstance: true to temporarily start it when needed.
+# This way Flux manages everything — no manual kubectl apply required.
+#
+# ============================================================================
+# WORKFLOW — First-time Initialisation
+# ============================================================================
+#
+#  1. Flux applies this file automatically.
+#
+#  2. Trigger the init task (downloads and installs Arknights APK):
+#       kubectl delete redroidtask base-init 2>/dev/null; kubectl apply -f - <<< "$(kubectl get redroidtask base-init -o yaml)"
+#       # or simply:
+#       ./scripts/maa.sh base-init
+#
+#  3. Monitor logs:
+#       kubectl logs -l redroid.isning.moe/task=base-init -c init-script -f
+#
+#  4. When the script finishes, connect and manually start the game once
+#     so it can download its resource packs (cannot be automated):
+#       kubectl redroid instance port-forward base --local-port 15556 &
+#       scrcpy -s 127.0.0.1:15556
+#     Open Arknights → accept EULA → click START on the download screen
+#     → wait for completion → exit the game.
+#
+#  5. The instance automatically stops when the task completes (wakeInstance).
+#     Normal instances (maa-0, maa-1 …) will read the updated base layer on
+#     their next restart.
+#
+# ============================================================================
+# WORKFLOW — Daily Update (automatic)
+# ============================================================================
+#
+#  The base-update task runs daily at 03:00 Asia/Shanghai (before maa-daily).
+#  It checks the official version API, downloads new APK if needed, and
+#  launches the game to trigger resource updates.
+#
+#  Manual trigger:
+#    kubectl delete redroidtask base-update 2>/dev/null
+#    kubectl apply -f - <<< "$(kubectl get redroidtask base-update -o yaml)"
+#    # or: ./scripts/maa.sh base-update
+#
+# ============================================================================
+
+---
+# ── Shared Base RedroidInstance (baseMode: true) ─────────────────────────────
+#
+# This instance is used by BOTH init and update tasks. It stays suspended
+# normally; tasks wake it temporarily via wakeInstance: true.
+apiVersion: redroid.isning.moe/v1alpha1
+kind: RedroidInstance
+metadata:
+  name: base
+  annotations:
+    redroid.isning.moe/purpose: "shared base layer management — init and daily update"
+spec:
+  index: 255            # High index; does not conflict with normal instances
+  image: redroid/redroid:16.0.0-latest
+  suspend: true         # Normally suspended; tasks wake it via wakeInstance
+  sharedDataPVC: redroid-data-base-pvc
+  diffDataPVC: redroid-data-diff-pvc  # Unused in baseMode but required by schema
+  baseMode: true        # Mount sharedDataPVC directly as /data (no overlayfs)
+  gpuMode: host
+
+---
+# ── Init Script ConfigMap ────────────────────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: base-init-script
+data:
+  APK_DOWNLOAD_URL: "https://ak.hypergryph.com/downloads/android_lastest"
+  ADB_CONNECT_TIMEOUT: "300"
+
+  init.sh: |
+    #!/usr/bin/env sh
+    set -e
+
+    APK_DOWNLOAD_URL="${APK_DOWNLOAD_URL:-https://ak.hypergryph.com/downloads/android_lastest}"
+    ADB_CONNECT_TIMEOUT="${ADB_CONNECT_TIMEOUT:-300}"
+    PACKAGE=com.hypergryph.arknights
+
+    log() { echo "[base-init] $(date '+%H:%M:%S') $*"; }
+
+    # ── 1. Wait for ADB ──────────────────────────────────────────────────────
+
+    log "Waiting for ADB on ${ADB_ADDRESS} (timeout ${ADB_CONNECT_TIMEOUT}s)..."
+    elapsed=0
+    until adb connect "${ADB_ADDRESS}" 2>&1 | grep -q "connected"; do
+      if [ "$elapsed" -ge "$ADB_CONNECT_TIMEOUT" ]; then
+        log "ERROR: ADB connect timed out after ${ADB_CONNECT_TIMEOUT}s."; exit 1
+      fi
+      sleep 5; elapsed=$((elapsed + 5))
+    done
+    adb -s "${ADB_ADDRESS}" wait-for-device
+    log "ADB connected. Waiting 30s for Android system to fully boot..."
+    sleep 30
+
+    # ── 2. Download Arknights APK ────────────────────────────────────────────
+
+    APK_PATH=/tmp/arknights_init.apk
+    log "Downloading Arknights APK from ${APK_DOWNLOAD_URL} ..."
+    curl -L --progress-bar --max-time 1800 -o "${APK_PATH}" "${APK_DOWNLOAD_URL}"
+    APK_SIZE=$(wc -c < "${APK_PATH}")
+    log "Downloaded: ${APK_SIZE} bytes -> ${APK_PATH}"
+
+    # ── 3. Install APK ───────────────────────────────────────────────────────
+
+    log "Installing APK (-r allows reinstall if already present)..."
+    adb -s "${ADB_ADDRESS}" install -r "${APK_PATH}"
+    log "APK installed: ${PACKAGE}"
+    rm -f "${APK_PATH}"
+
+    # ── Done — manual step required ─────────────────────────────────────────
+
+    log ""
+    log "============================================================"
+    log "Automated APK installation complete."
+    log ""
+    log "You must now MANUALLY connect to the instance and:"
+    log "  1. Open Arknights"
+    log "  2. Accept the EULA / first-launch agreement"
+    log "  3. Click START on the resource download screen"
+    log "  4. Wait for all game data to download (may take 30-60 min)"
+    log "  5. Exit the game"
+    log ""
+    log "Connect with:"
+    log "  kubectl redroid instance port-forward base --local-port 15556 &"
+    log "  scrcpy -s 127.0.0.1:15556"
+    log ""
+    log "The instance will stop automatically when the task completes."
+    log "============================================================"
+
+    # Keep the script running so the user can connect and do manual setup.
+    # The task Job will be kept alive; user can delete it when done.
+    log "Sleeping indefinitely — delete the Job when manual setup is complete:"
+    log "  kubectl delete job -l redroid.isning.moe/task=base-init"
+    sleep infinity
+
+---
+# ── Update Script ConfigMap ──────────────────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: base-update-script
+data:
+  SUSPEND_NORMAL_INSTANCES: "false"
+  GAME_LAUNCH_WAIT: "3600"
+  GAME_IDLE_WAIT: "120"
+
+  update.sh: |
+    #!/usr/bin/env sh
+    set -e
+
+    ADB_CONNECT_TIMEOUT="${ADB_CONNECT_TIMEOUT:-300}"
+    GAME_LAUNCH_WAIT="${GAME_LAUNCH_WAIT:-3600}"
+    GAME_IDLE_WAIT="${GAME_IDLE_WAIT:-120}"
+    PACKAGE=com.hypergryph.arknights
+    VER_FILE=/data/local/tmp/.ak_base_ver
+    APK_DOWNLOAD_URL=https://ak.hypergryph.com/downloads/android_lastest
+    VERSION_API=https://ak-conf.hypergryph.com/config/prod/official/Android/version
+
+    log() { echo "[base-update] $(date '+%H:%M:%S') $*"; }
+
+    adb_wait() {
+      log "Waiting for ADB on ${ADB_ADDRESS} (timeout ${ADB_CONNECT_TIMEOUT}s)..."
+      elapsed=0
+      until adb connect "${ADB_ADDRESS}" 2>&1 | grep -q "connected"; do
+        if [ "$elapsed" -ge "$ADB_CONNECT_TIMEOUT" ]; then
+          log "ERROR: ADB connect timed out."; exit 1
+        fi
+        sleep 5; elapsed=$((elapsed + 5))
+      done
+      adb -s "${ADB_ADDRESS}" wait-for-device
+      log "ADB ready."
+    }
+
+    # ── 1. Detect latest version ─────────────────────────────────────────────
+
+    log "Fetching version info from ${VERSION_API}..."
+    VERSION_JSON=$(curl -sf --max-time 30 "${VERSION_API}")
+    if [ -z "$VERSION_JSON" ]; then
+      log "ERROR: Failed to fetch version info. Aborting."; exit 1
+    fi
+    LATEST_CLIENT=$(echo "$VERSION_JSON" | grep -oE '"clientVersion":"[^"]*"' | sed 's/"clientVersion":"//;s/"//')
+    LATEST_RES=$(echo "$VERSION_JSON" | grep -oE '"resVersion":"[^"]*"' | sed 's/"resVersion":"//;s/"//')
+    log "Latest clientVersion: ${LATEST_CLIENT}"
+    log "Latest resVersion   : ${LATEST_RES}"
+    LATEST_VERSION="${LATEST_CLIENT}:${LATEST_RES}"
+
+    # ── 2. Read stored version ───────────────────────────────────────────────
+
+    adb_wait
+    STORED_VERSION=$(adb -s "${ADB_ADDRESS}" shell "cat ${VER_FILE} 2>/dev/null" | tr -d '\r\n')
+    log "Stored base version: ${STORED_VERSION:-<none>}"
+
+    if [ -n "$STORED_VERSION" ] && [ "$LATEST_VERSION" = "$STORED_VERSION" ]; then
+      log "Already up to date. Nothing to do."
+      exit 0
+    fi
+
+    STORED_CLIENT=$(echo "$STORED_VERSION" | cut -d: -f1)
+    APK_CHANGED=false
+    [ "$STORED_CLIENT" != "$LATEST_CLIENT" ] && APK_CHANGED=true
+
+    log "Update required: ${STORED_VERSION:-<none>} -> ${LATEST_VERSION}"
+
+    # ── 3. Download and install APK (if changed) ─────────────────────────────
+
+    if [ "$APK_CHANGED" = "true" ]; then
+      APK_PATH=/tmp/arknights_update.apk
+      log "APK version changed. Downloading..."
+      curl -L --progress-bar --max-time 1800 -o "${APK_PATH}" "${APK_DOWNLOAD_URL}"
+      log "Installing APK..."
+      adb -s "${ADB_ADDRESS}" install -r "${APK_PATH}"
+      log "APK installed."
+      rm -f "${APK_PATH}"
+    else
+      log "APK version unchanged. Skipping APK download."
+    fi
+
+    # ── 4. Launch game to trigger resource download ──────────────────────────
+
+    DATA_DIR="/sdcard/Android/data/${PACKAGE}"
+    get_data_size() {
+      adb -s "${ADB_ADDRESS}" shell "du -sk ${DATA_DIR} 2>/dev/null | awk '{print \$1}'" 2>/dev/null | tr -d '\r\n'
+    }
+
+    log "Launching ${PACKAGE} to trigger resource download..."
+    adb -s "${ADB_ADDRESS}" shell "monkey -p ${PACKAGE} -c android.intent.category.LAUNCHER 1" 2>/dev/null || true
+
+    log "Monitoring ${DATA_DIR} for download activity..."
+    elapsed=0; idle_elapsed=0
+    last_size=$(get_data_size)
+    log "Initial data dir size: ${last_size:-0} KB"
+
+    while [ "$elapsed" -lt "$GAME_LAUNCH_WAIT" ]; do
+      sleep 30; elapsed=$((elapsed + 30)); idle_elapsed=$((idle_elapsed + 30))
+      cur_size=$(get_data_size)
+
+      if [ -z "$cur_size" ] || [ "$cur_size" = "0" ]; then
+        ACTIVE=$(adb -s "${ADB_ADDRESS}" shell "ps -A 2>/dev/null | grep -c '${PACKAGE}'" 2>/dev/null | tr -d '\r\n' || echo "0")
+        if [ "$ACTIVE" = "0" ]; then
+          log "Game process exited. Assuming download done."
+          break
+        fi
+        continue
+      fi
+
+      if [ "$cur_size" != "$last_size" ]; then
+        log "Download active: ${cur_size} KB (elapsed ${elapsed}s)"
+        last_size="$cur_size"
+        idle_elapsed=0
+      else
+        if [ "$idle_elapsed" -ge "$GAME_IDLE_WAIT" ]; then
+          log "Size stable for ${GAME_IDLE_WAIT}s. Download appears complete."
+          break
+        fi
+      fi
+    done
+
+    log "Stopping game process..."
+    adb -s "${ADB_ADDRESS}" shell "am force-stop ${PACKAGE}" 2>/dev/null || true
+
+    # ── 5. Persist new version ───────────────────────────────────────────────
+
+    adb -s "${ADB_ADDRESS}" shell "mkdir -p $(dirname ${VER_FILE})"
+    adb -s "${ADB_ADDRESS}" shell "echo '${LATEST_VERSION}' > ${VER_FILE}"
+    log "Stored version '${LATEST_VERSION}' -> ${VER_FILE}"
+
+    log "=========================================================="
+    log "Base update to ${LATEST_VERSION} completed successfully."
+    log "=========================================================="
+
+---
+# ── One-shot Init Task ───────────────────────────────────────────────────────
+#
+# Trigger manually: kubectl delete redroidtask base-init; sleep 2; \
+#   kubectl get redroidtask base-init -o yaml | kubectl apply -f -
+# Or use: ./scripts/maa.sh base-init
+apiVersion: redroid.isning.moe/v1alpha1
+kind: RedroidTask
+metadata:
+  name: base-init
+spec:
+  # No schedule = one-shot Job (created when this resource is applied/updated)
+  instances:
+    - name: base
+  wakeInstance: true    # Start the suspended `base` instance for this task
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400  # Keep Job logs for 24 h after completion
+  integrations:
+    - name: init-script
+      image: androidsdk/android-32:latest
+      imagePullPolicy: IfNotPresent
+      command: ["/bin/sh"]
+      args: ["/scripts/init.sh"]
+      env:
+        - name: APK_DOWNLOAD_URL
+          valueFrom:
+            configMapKeyRef:
+              name: base-init-script
+              key: APK_DOWNLOAD_URL
+        - name: ADB_CONNECT_TIMEOUT
+          valueFrom:
+            configMapKeyRef:
+              name: base-init-script
+              key: ADB_CONNECT_TIMEOUT
+      configs:
+        - configMapName: base-init-script
+          key: init.sh
+          mountPath: /scripts/init.sh
+
+---
+# ── Scheduled Daily Update Task ──────────────────────────────────────────────
+apiVersion: redroid.isning.moe/v1alpha1
+kind: RedroidTask
+metadata:
+  name: base-update
+spec:
+  # Run daily at 03:00 Asia/Shanghai (before maa-daily at 04:00)
+  schedule: "0 3 * * *"
+  timezone: "Asia/Shanghai"
+
+  instances:
+    - name: base
+  wakeInstance: true    # Start the suspended `base` instance for this task
+
+  activeDeadlineSeconds: 7200  # Kill job if it runs longer than 2 hours
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 7200
+
+  successfulJobsHistoryLimit: 7
+  failedJobsHistoryLimit: 7
+
+  integrations:
+    - name: update-script
+      image: androidsdk/android-32:latest
+      imagePullPolicy: IfNotPresent
+      command: ["/bin/sh"]
+      args: ["/scripts/update.sh"]
+      env:
+        - name: ADB_CONNECT_TIMEOUT
+          value: "300"
+        - name: GAME_LAUNCH_WAIT
+          valueFrom:
+            configMapKeyRef:
+              name: base-update-script
+              key: GAME_LAUNCH_WAIT
+        - name: GAME_IDLE_WAIT
+          valueFrom:
+            configMapKeyRef:
+              name: base-update-script
+              key: GAME_IDLE_WAIT
+      configs:
+        - configMapName: base-update-script
+          key: update.sh
+          mountPath: /scripts/update.sh

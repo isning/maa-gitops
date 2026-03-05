@@ -1,0 +1,24 @@
+# Redroid persistent storage
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redroid-data-base-pvc
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 15Gi # Shared readonly lower layer: game assets and common data
+
+---
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redroid-data-diff-pvc
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 15Gi # Per-instance upper layer via subPathExpr (account/private data)

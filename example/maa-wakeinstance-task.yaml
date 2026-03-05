@@ -1,0 +1,77 @@
+# ============================================================================
+# MAA On-Demand Wake Task (Extension Example)
+# ============================================================================
+#
+# This file is an EXTENSION EXAMPLE showing how to trigger MAA manually for
+# a specific instance without waiting for the daily schedule.
+#
+# Use cases:
+#   - Run MAA immediately (not wait for the CronJob schedule)
+#   - Run MAA only on a specific instance
+#   - Test or debug a single account
+#
+# ── wakeInstance Mechanism ───────────────────────────────────────────────────
+#
+#   1. Set status.woken on each instance  →  instance controller starts the Pod.
+#   2. Wait for phase == Running.
+#   3. Create and execute the Job.
+#   4. Clear status.woken after the Job finishes  →  Pod stops again.
+#
+# spec.suspend is NEVER modified, so Flux/Argo CD sees no drift.
+#
+# ── Usage ────────────────────────────────────────────────────────────────────
+#
+#   # Trigger a manual run:
+#   kubectl apply -f example/maa-wakeinstance-task.yaml
+#
+#   # Watch execution (instance goes Stopped → Running → Stopped):
+#   kubectl get redroidinstances -w
+#   kubectl logs -l redroid.isning.moe/task=maa-wake-run -c maa-cli -f
+#
+#   # Re-trigger (delete the completed task first):
+#   kubectl delete redroidtask maa-wake-run
+#   kubectl apply -f example/maa-wakeinstance-task.yaml
+#
+# ============================================================================
+
+apiVersion: redroid.isning.moe/v1alpha1
+kind: RedroidTask
+metadata:
+  name: maa-wake-run
+spec:
+  # No schedule = one-shot Job.
+  wakeInstance: true   # powers on suspended instances for the duration of the Job
+
+  instances:
+    - name: maa-1
+    # - name: maa-0
+
+  # Same volume layout as maa-task.yaml: profile + tasks.
+  volumes:
+    - name: maa-profile
+      configMap:
+        name: maa-profile
+        items:
+          - key: default.toml
+            path: profiles/default.toml
+    - name: maa-tasks
+      configMap:
+        name: maa-tasks
+
+  integrations:
+    - name: maa-cli
+      image: ghcr.io/isning/maa-cli-debian:latest
+      imagePullPolicy: Always
+      # Same config structure as maa-task.yaml.
+      command: ["/bin/sh", "-c"]
+      args: ["export MAA_CONFIG_DIR=/etc/maa && exec maa run ${INSTANCE_INDEX} --batch"]
+      volumeMounts:
+        - name: maa-profile
+          mountPath: /etc/maa
+          readOnly: true
+        - name: maa-tasks
+          mountPath: /etc/maa/tasks
+          readOnly: true
+
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600   # auto-clean the completed Job after 1 hour

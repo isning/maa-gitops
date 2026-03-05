@@ -1,0 +1,48 @@
+# RedroidInstance resources for MAA accounts.
+# Each instance gets its own /data-diff/<index> overlay layer over the shared base PVC.
+#
+# Available fields:
+#   spec.suspend: true   — stop the instance Pod (no resource usage)
+#   spec.gpuNode         — explicit DRM device; leave unset for auto-detect
+#   spec.screen          — virtual display config (width/height/dpi/fps)
+#   spec.network         — DNS and HTTP/HTTPS proxy settings
+#   spec.extraEnv        — inject env vars (supports secretKeyRef / configMapKeyRef)
+#   spec.extraArgs       — custom androidboot.* args
+
+---
+apiVersion: redroid.isning.moe/v1alpha1
+kind: RedroidInstance
+metadata:
+  name: maa-0
+spec:
+  index: 0
+  image: redroid/redroid:16.0.0-latest
+  suspend: true
+  sharedDataPVC: redroid-data-base-pvc
+  diffDataPVC: redroid-data-diff-pvc
+  gpuMode: host
+  # gpuNode: /dev/dri/renderD128
+  # screen:
+  #   width: 1080
+  #   height: 1920
+  #   dpi: 480
+  #   fps: 60
+  # network:
+  #   dns: [8.8.8.8, 8.8.4.4]
+  #   proxy:
+  #     type: static
+  #     host: proxy.example.com
+  #     port: 8080
+
+---
+apiVersion: redroid.isning.moe/v1alpha1
+kind: RedroidInstance
+metadata:
+  name: maa-1
+spec:
+  index: 1
+  image: redroid/redroid:16.0.0-latest
+  suspend: true
+  sharedDataPVC: redroid-data-base-pvc
+  diffDataPVC: redroid-data-diff-pvc
+  gpuMode: host

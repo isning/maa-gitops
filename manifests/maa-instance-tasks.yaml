@@ -1,0 +1,76 @@
+# Per-instance maa-cli task files — one ConfigMap per RedroidInstance.
+#
+# Each ConfigMap holds a single key "default.toml". It is mounted into the
+# maa-cli container via spec.instances[].volumes + spec.instances[].volumeMounts
+# in maa-task.yaml, so each instance gets its own isolated task config.
+#
+# maa-cli runs: MAA_CONFIG_DIR=/etc/maa maa run default --batch
+# which loads $MAA_CONFIG_DIR/tasks/default.toml
+#
+# Benefits over the shared-ConfigMap approach:
+#   • Each account's config is fully isolated — no index coordination needed.
+#   • Adding an account: add a new ConfigMap + instance entry; nothing else changes.
+#   • The run command is static ("default"), not tied to ${INSTANCE_INDEX}.
+#
+# To add a new account:
+#   1. Add a new ConfigMap below (copy maa-tasks-maa-0, rename to maa-tasks-<instance>)
+#   2. Add a RedroidInstance in redroid-instances.yaml
+#   3. Add the instance to spec.instances in maa-task.yaml (with volumes + volumeMounts)
+#   See README → "Adding More Accounts" for details.
+#
+# Reference: https://github.com/MaaAssistantArknights/maa-cli/blob/main/crates/maa-cli/docs/en-US/config.md
+
+# ── Task config for instance maa-0 ───────────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: maa-tasks-maa-0
+data:
+  "default.toml": |
+    [[tasks]]
+    type = "StartUp"
+    [tasks.params]
+    client_type = "Official"
+    start_game_enabled = true
+
+    [[tasks]]
+    type = "Infrast"
+    [tasks.params]
+    mode = 10000
+    facility = ["Mfg", "Trade", "Control", "Recruit", "Power", "Reception", "Office", "Dorm"]
+    dorm_trust_enabled = true
+
+    [[tasks]]
+    type = "Fight"
+    [tasks.params]
+    stage = "1-7"
+    medicine = 3
+
+    [[tasks]]
+    type = "Mall"
+
+    [[tasks]]
+    type = "Award"
+
+# ── Task config for instance maa-1 (template — uncomment to activate) ────────
+# ---
+# apiVersion: v1
+# kind: ConfigMap
+# metadata:
+#   name: maa-tasks-maa-1
+# data:
+#   "default.toml": |
+#     [[tasks]]
+#     type = "StartUp"
+#     [tasks.params]
+#     client_type = "Official"
+#     start_game_enabled = true
+#
+#     [[tasks]]
+#     type = "Fight"
+#     [tasks.params]
+#     stage = "CE-6"
+#     medicine = 5
+#
+#     [[tasks]]
+#     type = "Award"

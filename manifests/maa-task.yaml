@@ -1,0 +1,68 @@
+# RedroidTask — daily MAA automation.
+#
+# wakeInstance: true tells the operator to temporarily start each listed instance
+# for the duration of the Job, then stop it again — spec.suspend is never
+# modified, so Flux/Argo CD sees no drift.
+#
+# To add more accounts, see README → "Adding More Accounts".
+# For on-demand one-shot runs, see example/maa-wakeinstance-task.yaml.
+
+apiVersion: redroid.isning.moe/v1alpha1
+kind: RedroidTask
+metadata:
+  name: maa-daily
+spec:
+  schedule: "0 4 * * *"
+  timezone: "Asia/Shanghai"   # IANA timezone, requires K8s >= 1.27
+
+  instances:
+    - name: maa-0
+      # Per-instance task config: maa-tasks-maa-0 → /etc/maa/tasks/default.toml
+      # Each instance mounts its own ConfigMap; the run command is always static.
+      volumes:
+        - name: maa-tasks
+          configMap:
+            name: maa-tasks-maa-0
+      volumeMounts:
+        - name: maa-tasks
+          mountPath: /etc/maa/tasks
+          readOnly: true
+    # ── Add more instances here ────────────────────────────────────────────
+    # - name: maa-1
+    #   volumes:
+    #     - name: maa-tasks
+    #       configMap:
+    #         name: maa-tasks-maa-1
+    #   volumeMounts:
+    #     - name: maa-tasks
+    #       mountPath: /etc/maa/tasks
+    #       readOnly: true
+
+  # wakeInstance: temporarily starts suspended instances for the Job, then stops them.
+  wakeInstance: true
+
+  # Shared connection profile — mounted at task level (same for all instances).
+  volumes:
+    - name: maa-profile
+      configMap:
+        name: maa-profile
+        items:
+          - key: default.toml
+            path: profiles/default.toml
+
+  integrations:
+    - name: maa-cli
+      image: ghcr.io/isning/maa-cli-debian:latest
+      imagePullPolicy: Always
+      # MAA_CONFIG_DIR=/etc/maa; per-instance task file is always "default.toml".
+      # No ${INSTANCE_INDEX} needed — each instance has its own dedicated ConfigMap.
+      command: ["/bin/sh", "-c"]
+      args: ["export MAA_CONFIG_DIR=/etc/maa && exec maa run default --batch"]
+      volumeMounts:
+        - name: maa-profile
+          mountPath: /etc/maa
+          readOnly: true
+
+  backoffLimit: 0
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3

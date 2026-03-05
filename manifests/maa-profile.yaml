@@ -1,0 +1,20 @@
+# Shared maa-cli connection profile.
+#
+# Mounted to $MAA_CONFIG_DIR/profiles/default.toml in every maa-cli container.
+# All instances share this profile — it defines how maa-cli connects to ADB
+# within the Pod (always 127.0.0.1:5555 since redroid runs as a sidecar).
+#
+# Reference: https://github.com/MaaAssistantArknights/maa-cli/blob/main/crates/maa-cli/docs/en-US/config.md
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: maa-profile
+data:
+  "default.toml": |
+    [connection]
+    adb_path = "adb"
+    address = "127.0.0.1:5555"
+
+    [instance_options]
+    touch_mode = "MaaTouch"
