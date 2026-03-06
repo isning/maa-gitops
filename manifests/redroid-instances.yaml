@@ -16,7 +16,7 @@ metadata:
   name: maa-0
 spec:
   index: 0
-  image: redroid/redroid:16.0.0-latest
+  image: redroid/redroid:13.0.0-latest
   suspend: true
   sharedDataPVC: redroid-data-base-pvc
   diffDataPVC: redroid-data-diff-pvc
@@ -41,7 +41,7 @@ metadata:
   name: maa-1
 spec:
   index: 1
-  image: redroid/redroid:16.0.0-latest
+  image: redroid/redroid:13.0.0-latest
   suspend: true
   sharedDataPVC: redroid-data-base-pvc
   diffDataPVC: redroid-data-diff-pvc
